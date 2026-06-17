@@ -43,6 +43,9 @@ jobs:
         working-directory: app
         run: bandit -r app.py
 
+      - name: Set PYTHONPATH for tests
+        run: echo "PYTHONPATH=${GITHUB_WORKSPACE}/app" >> $GITHUB_ENV
+
       - name: Run tests with coverage
         working-directory: app
         run: pytest --cov=app --cov-report=term-missing --cov-fail-under=80
@@ -96,7 +99,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Scan filesystem for vulnerabilities (Trivy)
-        uses: aquasecurity/trivy-action@0.24.0
+        uses: aquasecurity/trivy-action@master
         continue-on-error: true   # report-only: never block the pipeline on a scanner hiccup
         with:
           scan-type: fs
@@ -165,7 +168,7 @@ jobs:
       - name: Scan built image (Trivy)
         if: github.event_name == 'push'
         continue-on-error: true   # report-only: a scanner hiccup must not fail a good build
-        uses: aquasecurity/trivy-action@0.24.0
+        uses: aquasecurity/trivy-action@master
         with:
           image-ref: ${{ steps.image.outputs.name }}:latest
           severity: HIGH,CRITICAL
