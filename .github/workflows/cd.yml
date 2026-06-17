@@ -1,0 +1,82 @@
+name: CD (deploy to kind)
+
+# Spins up a REAL Kubernetes cluster inside the runner using kind
+# (Kubernetes-in-Docker), deploys the app with Helm, and smoke-tests it.
+# Fully self-contained: no cloud account, no credentials, no cost.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  deploy-and-test:
+    name: Deploy to kind & smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build app image
+        run: docker build -t demo-app:ci .
+
+      - name: Create kind cluster
+        uses: helm/kind-action@v1.10.0
+        with:
+          cluster_name: demo
+          wait: 120s
+
+      - name: Load image into kind
+        run: kind load docker-image demo-app:ci --name demo
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+
+      - name: Deploy with Helm
+        run: |
+          helm upgrade --install demo helm/demo-app \
+            --set image.repository=demo-app \
+            --set image.tag=ci \
+            --set image.pullPolicy=Never \
+            --set autoscaling.enabled=false \
+            --set replicaCount=2 \
+            --wait --timeout 120s
+
+      - name: Show cluster state
+        run: |
+          kubectl get pods -o wide
+          kubectl get svc
+          kubectl rollout status deploy/demo-demo-app --timeout=60s
+
+      - name: Smoke test the service
+        run: |
+          # Port-forward the service and hit its endpoints
+          kubectl port-forward svc/demo-demo-app 8080:80 &
+          PF_PID=$!
+          sleep 5
+
+          echo "== GET /health =="
+          curl -fsS http://localhost:8080/health | tee /dev/stderr | grep -q '"status":"ok"'
+
+          echo "== GET / =="
+          curl -fsS http://localhost:8080/ | tee /dev/stderr | grep -q 'devops-demo-platform'
+
+          echo "== POST /api/tasks =="
+          curl -fsS -X POST http://localhost:8080/api/tasks \
+            -H 'Content-Type: application/json' \
+            -d '{"title":"smoke-test"}' | tee /dev/stderr | grep -q 'smoke-test'
+
+          echo "== GET /metrics =="
+          curl -fsS http://localhost:8080/metrics | grep -q 'app_http_requests_total'
+
+          kill $PF_PID
+          echo "All smoke tests passed ✅"
+
+      - name: Dump diagnostics on failure
+        if: failure()
+        run: |
+          kubectl get all
+          kubectl describe pods
+          kubectl logs -l app.kubernetes.io/name=demo-app --tail=100 || true

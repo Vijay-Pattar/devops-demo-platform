@@ -1,0 +1,39 @@
+replicaCount: 2
+
+image:
+  repository: ghcr.io/vijay-pattar/devops-demo-platform
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8000
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 250m
+    memory: 128Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 75
+
+# Liveness/readiness probe paths exposed by the app
+probes:
+  liveness: /health
+  readiness: /ready
+
+env:
+  APP_VERSION: "0.1.0"
+
+# Prometheus scrape annotations on the pods
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "8000"
+  prometheus.io/path: "/metrics"

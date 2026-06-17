@@ -1,0 +1,16 @@
+.git
+.github
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.ruff_cache
+htmlcov
+.coverage
+*.md
+docs
+helm
+k8s
+terraform
+monitoring
+.venv
+venv

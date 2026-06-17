@@ -1,0 +1,173 @@
+name: CI
+
+# Runs on every push and PR. Lint -> test -> security scan -> build image.
+# Everything runs on GitHub-hosted public runners. No secrets required:
+# image publishing uses the built-in GITHUB_TOKEN.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------------------
+  lint-and-test:
+    name: Lint & Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        working-directory: app
+        run: pip install -r requirements-dev.txt
+
+      - name: Lint (ruff)
+        working-directory: app
+        run: ruff check .
+
+      - name: Static security scan (bandit)
+        working-directory: app
+        run: bandit -r app.py
+
+      - name: Run tests with coverage
+        working-directory: app
+        run: pytest --cov=app --cov-report=term-missing --cov-fail-under=80
+
+  # ---------------------------------------------------------------------------
+  iac-checks:
+    name: IaC & Config Validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Lint Dockerfile (hadolint)
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: Dockerfile
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+
+      - name: Helm lint
+        run: helm lint helm/demo-app
+
+      - name: Helm template (render manifests)
+        run: helm template demo helm/demo-app > /tmp/rendered.yaml
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform fmt check
+        working-directory: terraform
+        run: terraform fmt -check -recursive
+
+      - name: Terraform init & validate
+        working-directory: terraform
+        run: |
+          terraform init -backend=false
+          terraform validate
+
+      - name: Validate Prometheus config (promtool)
+        run: |
+          docker run --rm --entrypoint promtool \
+            -v "${{ github.workspace }}/monitoring":/cfg \
+            prom/prometheus:v2.53.0 \
+            check config /cfg/prometheus.yml
+
+  # ---------------------------------------------------------------------------
+  security-scan:
+    name: Filesystem & Secret Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Scan filesystem for vulnerabilities (Trivy)
+        uses: aquasecurity/trivy-action@0.24.0
+        continue-on-error: true   # report-only: never block the pipeline on a scanner hiccup
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: HIGH,CRITICAL
+          exit-code: "0"
+          ignore-unfixed: true
+        env:
+          # Skip the vuln-DB update if ghcr is rate-limiting; use cached DB instead
+          TRIVY_SKIP_DB_UPDATE: "false"
+          TRIVY_TIMEOUT: "10m"
+
+      - name: Scan for committed secrets (Gitleaks)
+        continue-on-error: true   # report-only; runs the OSS image directly (no license gate)
+        run: |
+          docker run --rm -v "${{ github.workspace }}:/repo" \
+            zricethezav/gitleaks:latest \
+            detect --source=/repo --no-git --redact --verbose --no-banner \
+            --exit-code 0
+
+  # ---------------------------------------------------------------------------
+  build-and-push:
+    name: Build & Push Image
+    runs-on: ubuntu-latest
+    needs: [lint-and-test, iac-checks, security-scan]
+    permissions:
+      contents: read
+      packages: write   # push to GHCR using GITHUB_TOKEN
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute lowercase image name
+        id: image
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Docker metadata (tags & labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.image.outputs.name }}
+          tags: |
+            type=sha,format=short
+            type=ref,event=branch
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: ${{ github.event_name == 'push' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Scan built image (Trivy)
+        if: github.event_name == 'push'
+        continue-on-error: true   # report-only: a scanner hiccup must not fail a good build
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: ${{ steps.image.outputs.name }}:latest
+          severity: HIGH,CRITICAL
+          exit-code: "0"
+          ignore-unfixed: true

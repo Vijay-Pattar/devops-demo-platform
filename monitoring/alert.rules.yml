@@ -1,0 +1,39 @@
+groups:
+  - name: demo-app-alerts
+    rules:
+      # Fire if the app stops being scrapeable (proxy for "is it up?")
+      - alert: AppDown
+        expr: up{job="demo-app"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Demo app is down"
+          description: "The demo-app target has been unreachable for over 1 minute."
+
+      # High error rate: >5% of requests returning 5xx over 5 minutes
+      - alert: HighErrorRate
+        expr: |
+          sum(rate(app_http_requests_total{http_status=~"5.."}[5m]))
+            /
+          sum(rate(app_http_requests_total[5m])) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High HTTP 5xx error rate"
+          description: "More than 5% of requests are failing over the last 5 minutes."
+
+      # Latency SLO: 95th percentile request latency above 0.5s
+      - alert: HighRequestLatency
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum(rate(app_http_request_duration_seconds_bucket[5m])) by (le)
+          ) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High p95 request latency"
+          description: "95th percentile latency has exceeded 500ms for 5 minutes."

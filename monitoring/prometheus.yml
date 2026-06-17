@@ -1,0 +1,18 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - "alert.rules.yml"
+
+scrape_configs:
+  # Prometheus scraping itself
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # The demo application
+  - job_name: "demo-app"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["app:8000"]

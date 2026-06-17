@@ -1,0 +1,27 @@
+# Local development stack: the app + Prometheus scraping it.
+# Run:  docker compose up --build
+# Then: app        -> http://localhost:8000
+#       Prometheus -> http://localhost:9090
+services:
+  app:
+    build: .
+    image: devops-demo-platform:local
+    ports:
+      - "8000:8000"
+    environment:
+      APP_VERSION: "0.1.0-local"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0) if urllib.request.urlopen('http://localhost:8000/health').status==200 else sys.exit(1)"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/alert.rules.yml:/etc/prometheus/alert.rules.yml:ro
+    depends_on:
+      - app
